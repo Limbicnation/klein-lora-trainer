@@ -20,8 +20,13 @@ class LoRAConfig:
     alpha: int = 16
     dropout: float = 0.0
     target_modules: List[str] = field(default_factory=lambda: [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
+        "model.layers.\\d+.self_attn.q_proj",
+        "model.layers.\\d+.self_attn.k_proj",
+        "model.layers.\\d+.self_attn.v_proj",
+        "model.layers.\\d+.self_attn.o_proj",
+        "model.layers.\\d+.mlp.gate_proj",
+        "model.layers.\\d+.mlp.up_proj",
+        "model.layers.\\d+.mlp.down_proj",
     ])
     use_rslora: bool = True  # Rank-stabilized LoRA for better training
 
