@@ -12,14 +12,69 @@ class ModelConfig:
     dtype: str = "bfloat16"  # FLUX.2-klein works best with bfloat16
     enable_cpu_offload: bool = False  # Set True for <16GB VRAM
     
+
+def _get_default_target_modules():
+    """Generate correct target modules for FLUX.2-klein transformer.
     
+    FLUX.2-klein uses a unique architecture with:
+    - 5 double-stream transformer blocks (joint image-text processing)
+    - 20 single-stream transformer blocks (unified processing)
+    - Various embedders and modulation layers
+    """
+    modules = []
+    
+    # Double-stream transformer blocks (5 blocks)
+    for i in range(5):
+        modules.extend([
+            f"transformer_blocks.{i}.attn.to_q",
+            f"transformer_blocks.{i}.attn.to_k",
+            f"transformer_blocks.{i}.attn.to_v",
+            f"transformer_blocks.{i}.attn.to_out.0",
+            f"transformer_blocks.{i}.attn.add_q_proj",
+            f"transformer_blocks.{i}.attn.add_k_proj",
+            f"transformer_blocks.{i}.attn.add_v_proj",
+            f"transformer_blocks.{i}.attn.to_add_out",
+            f"transformer_blocks.{i}.ff.linear_in",
+            f"transformer_blocks.{i}.ff.linear_out",
+            f"transformer_blocks.{i}.ff_context.linear_in",
+            f"transformer_blocks.{i}.ff_context.linear_out",
+        ])
+    
+    # Single-stream transformer blocks (20 blocks)
+    for i in range(20):
+        modules.extend([
+            f"single_transformer_blocks.{i}.attn.to_qkv_mlp_proj",
+            f"single_transformer_blocks.{i}.attn.to_out",
+        ])
+    
+    # Embedders and output layers
+    modules.extend([
+        "time_guidance_embed.timestep_embedder.linear_1",
+        "time_guidance_embed.timestep_embedder.linear_2",
+        "double_stream_modulation_img.linear",
+        "double_stream_modulation_txt.linear",
+        "x_embedder",
+        "context_embedder",
+        "single_stream_modulation.linear",
+        "norm_out.linear",
+        "proj_out",
+    ])
+    
+    return modules
+
+
 @dataclass
 class LoRAConfig:
-    """LoRA configuration."""
+    """LoRA configuration for FLUX.2-klein-4B.
+    
+    WARNING: FLUX.2-klein uses DIFFERENT module names than standard LLaMA!
+    The transformer uses transformer_blocks.X and single_transformer_blocks.X
+    instead of model.layers.X
+    """
     rank: int = 16
     alpha: int = 16
     dropout: float = 0.0
-    target_modules: List[str] = field(default_factory=lambda: ["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj", "model.layers.0.self_attn.v_proj", "model.layers.0.self_attn.o_proj", "model.layers.0.mlp.gate_proj", "model.layers.0.mlp.up_proj", "model.layers.0.mlp.down_proj", "model.layers.1.self_attn.q_proj", "model.layers.1.self_attn.k_proj", "model.layers.1.self_attn.v_proj", "model.layers.1.self_attn.o_proj", "model.layers.1.mlp.gate_proj", "model.layers.1.mlp.up_proj", "model.layers.1.mlp.down_proj", "model.layers.2.self_attn.q_proj", "model.layers.2.self_attn.k_proj", "model.layers.2.self_attn.v_proj", "model.layers.2.self_attn.o_proj", "model.layers.2.mlp.gate_proj", "model.layers.2.mlp.up_proj", "model.layers.2.mlp.down_proj", "model.layers.3.self_attn.q_proj", "model.layers.3.self_attn.k_proj", "model.layers.3.self_attn.v_proj", "model.layers.3.self_attn.o_proj", "model.layers.3.mlp.gate_proj", "model.layers.3.mlp.up_proj", "model.layers.3.mlp.down_proj", "model.layers.4.self_attn.q_proj", "model.layers.4.self_attn.k_proj", "model.layers.4.self_attn.v_proj", "model.layers.4.self_attn.o_proj", "model.layers.4.mlp.gate_proj", "model.layers.4.mlp.up_proj", "model.layers.4.mlp.down_proj", "model.layers.5.self_attn.q_proj", "model.layers.5.self_attn.k_proj", "model.layers.5.self_attn.v_proj", "model.layers.5.self_attn.o_proj", "model.layers.5.mlp.gate_proj", "model.layers.5.mlp.up_proj", "model.layers.5.mlp.down_proj", "model.layers.6.self_attn.q_proj", "model.layers.6.self_attn.k_proj", "model.layers.6.self_attn.v_proj", "model.layers.6.self_attn.o_proj", "model.layers.6.mlp.gate_proj", "model.layers.6.mlp.up_proj", "model.layers.6.mlp.down_proj", "model.layers.7.self_attn.q_proj", "model.layers.7.self_attn.k_proj", "model.layers.7.self_attn.v_proj", "model.layers.7.self_attn.o_proj", "model.layers.7.mlp.gate_proj", "model.layers.7.mlp.up_proj", "model.layers.7.mlp.down_proj", "model.layers.8.self_attn.q_proj", "model.layers.8.self_attn.k_proj", "model.layers.8.self_attn.v_proj", "model.layers.8.self_attn.o_proj", "model.layers.8.mlp.gate_proj", "model.layers.8.mlp.up_proj", "model.layers.8.mlp.down_proj", "model.layers.9.self_attn.q_proj", "model.layers.9.self_attn.k_proj", "model.layers.9.self_attn.v_proj", "model.layers.9.self_attn.o_proj", "model.layers.9.mlp.gate_proj", "model.layers.9.mlp.up_proj", "model.layers.9.mlp.down_proj", "model.layers.10.self_attn.q_proj", "model.layers.10.self_attn.k_proj", "model.layers.10.self_attn.v_proj", "model.layers.10.self_attn.o_proj", "model.layers.10.mlp.gate_proj", "model.layers.10.mlp.up_proj", "model.layers.10.mlp.down_proj", "model.layers.11.self_attn.q_proj", "model.layers.11.self_attn.k_proj", "model.layers.11.self_attn.v_proj", "model.layers.11.self_attn.o_proj", "model.layers.11.mlp.gate_proj", "model.layers.11.mlp.up_proj", "model.layers.11.mlp.down_proj", "model.layers.12.self_attn.q_proj", "model.layers.12.self_attn.k_proj", "model.layers.12.self_attn.v_proj", "model.layers.12.self_attn.o_proj", "model.layers.12.mlp.gate_proj", "model.layers.12.mlp.up_proj", "model.layers.12.mlp.down_proj", "model.layers.13.self_attn.q_proj", "model.layers.13.self_attn.k_proj", "model.layers.13.self_attn.v_proj", "model.layers.13.self_attn.o_proj", "model.layers.13.mlp.gate_proj", "model.layers.13.mlp.up_proj", "model.layers.13.mlp.down_proj", "model.layers.14.self_attn.q_proj", "model.layers.14.self_attn.k_proj", "model.layers.14.self_attn.v_proj", "model.layers.14.self_attn.o_proj", "model.layers.14.mlp.gate_proj", "model.layers.14.mlp.up_proj", "model.layers.14.mlp.down_proj", "model.layers.15.self_attn.q_proj", "model.layers.15.self_attn.k_proj", "model.layers.15.self_attn.v_proj", "model.layers.15.self_attn.o_proj", "model.layers.15.mlp.gate_proj", "model.layers.15.mlp.up_proj", "model.layers.15.mlp.down_proj", "model.layers.16.self_attn.q_proj", "model.layers.16.self_attn.k_proj", "model.layers.16.self_attn.v_proj", "model.layers.16.self_attn.o_proj", "model.layers.16.mlp.gate_proj", "model.layers.16.mlp.up_proj", "model.layers.16.mlp.down_proj", "model.layers.17.self_attn.q_proj", "model.layers.17.self_attn.k_proj", "model.layers.17.self_attn.v_proj", "model.layers.17.self_attn.o_proj", "model.layers.17.mlp.gate_proj", "model.layers.17.mlp.up_proj", "model.layers.17.mlp.down_proj", "model.layers.18.self_attn.q_proj", "model.layers.18.self_attn.k_proj", "model.layers.18.self_attn.v_proj", "model.layers.18.self_attn.o_proj", "model.layers.18.mlp.gate_proj", "model.layers.18.mlp.up_proj", "model.layers.18.mlp.down_proj", "model.layers.19.self_attn.q_proj", "model.layers.19.self_attn.k_proj", "model.layers.19.self_attn.v_proj", "model.layers.19.self_attn.o_proj", "model.layers.19.mlp.gate_proj", "model.layers.19.mlp.up_proj", "model.layers.19.mlp.down_proj", "model.layers.20.self_attn.q_proj", "model.layers.20.self_attn.k_proj", "model.layers.20.self_attn.v_proj", "model.layers.20.self_attn.o_proj", "model.layers.20.mlp.gate_proj", "model.layers.20.mlp.up_proj", "model.layers.20.mlp.down_proj", "model.layers.21.self_attn.q_proj", "model.layers.21.self_attn.k_proj", "model.layers.21.self_attn.v_proj", "model.layers.21.self_attn.o_proj", "model.layers.21.mlp.gate_proj", "model.layers.21.mlp.up_proj", "model.layers.21.mlp.down_proj", "model.layers.22.self_attn.q_proj", "model.layers.22.self_attn.k_proj", "model.layers.22.self_attn.v_proj", "model.layers.22.self_attn.o_proj", "model.layers.22.mlp.gate_proj", "model.layers.22.mlp.up_proj", "model.layers.22.mlp.down_proj", "model.layers.23.self_attn.q_proj", "model.layers.23.self_attn.k_proj", "model.layers.23.self_attn.v_proj", "model.layers.23.self_attn.o_proj", "model.layers.23.mlp.gate_proj", "model.layers.23.mlp.up_proj", "model.layers.23.mlp.down_proj", "model.layers.24.self_attn.q_proj", "model.layers.24.self_attn.k_proj", "model.layers.24.self_attn.v_proj", "model.layers.24.self_attn.o_proj", "model.layers.24.mlp.gate_proj", "model.layers.24.mlp.up_proj", "model.layers.24.mlp.down_proj", "model.layers.25.self_attn.q_proj", "model.layers.25.self_attn.k_proj", "model.layers.25.self_attn.v_proj", "model.layers.25.self_attn.o_proj", "model.layers.25.mlp.gate_proj", "model.layers.25.mlp.up_proj", "model.layers.25.mlp.down_proj", "model.layers.26.self_attn.q_proj", "model.layers.26.self_attn.k_proj", "model.layers.26.self_attn.v_proj", "model.layers.26.self_attn.o_proj", "model.layers.26.mlp.gate_proj", "model.layers.26.mlp.up_proj", "model.layers.26.mlp.down_proj", "model.layers.27.self_attn.q_proj", "model.layers.27.self_attn.k_proj", "model.layers.27.self_attn.v_proj", "model.layers.27.self_attn.o_proj", "model.layers.27.mlp.gate_proj", "model.layers.27.mlp.up_proj", "model.layers.27.mlp.down_proj", "model.layers.28.self_attn.q_proj", "model.layers.28.self_attn.k_proj", "model.layers.28.self_attn.v_proj", "model.layers.28.self_attn.o_proj", "model.layers.28.mlp.gate_proj", "model.layers.28.mlp.up_proj", "model.layers.28.mlp.down_proj", "model.layers.29.self_attn.q_proj", "model.layers.29.self_attn.k_proj", "model.layers.29.self_attn.v_proj", "model.layers.29.self_attn.o_proj", "model.layers.29.mlp.gate_proj", "model.layers.29.mlp.up_proj", "model.layers.29.mlp.down_proj", "model.layers.30.self_attn.q_proj", "model.layers.30.self_attn.k_proj", "model.layers.30.self_attn.v_proj", "model.layers.30.self_attn.o_proj", "model.layers.30.mlp.gate_proj", "model.layers.30.mlp.up_proj", "model.layers.30.mlp.down_proj", "model.layers.31.self_attn.q_proj", "model.layers.31.self_attn.k_proj", "model.layers.31.self_attn.v_proj", "model.layers.31.self_attn.o_proj", "model.layers.31.mlp.gate_proj", "model.layers.31.mlp.up_proj", "model.layers.31.mlp.down_proj", "model.layers.32.self_attn.q_proj", "model.layers.32.self_attn.k_proj", "model.layers.32.self_attn.v_proj", "model.layers.32.self_attn.o_proj", "model.layers.32.mlp.gate_proj", "model.layers.32.mlp.up_proj", "model.layers.32.mlp.down_proj", "model.layers.33.self_attn.q_proj", "model.layers.33.self_attn.k_proj", "model.layers.33.self_attn.v_proj", "model.layers.33.self_attn.o_proj", "model.layers.33.mlp.gate_proj", "model.layers.33.mlp.up_proj", "model.layers.33.mlp.down_proj", "model.layers.34.self_attn.q_proj", "model.layers.34.self_attn.k_proj", "model.layers.34.self_attn.v_proj", "model.layers.34.self_attn.o_proj", "model.layers.34.mlp.gate_proj", "model.layers.34.mlp.up_proj", "model.layers.34.mlp.down_proj", "model.layers.35.self_attn.q_proj", "model.layers.35.self_attn.k_proj", "model.layers.35.self_attn.v_proj", "model.layers.35.self_attn.o_proj", "model.layers.35.mlp.gate_proj", "model.layers.35.mlp.up_proj", "model.layers.35.mlp.down_proj"])
+    target_modules: List[str] = field(default_factory=_get_default_target_modules)
     use_rslora: bool = True  # Rank-stabilized LoRA for better training
 
 
