@@ -1,5 +1,7 @@
 # FLUX.2-klein-4B LoRA Trainer
 
+> 🎮 **Part of [SpriteForge](https://github.com/Limbicnation/SpriteForge) - AI-powered pixel art sprite generator**
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 
@@ -19,6 +21,13 @@ A dedicated, memory-efficient LoRA trainer for **FLUX.2-klein-4B**. Built specif
 - NVIDIA GPU with 13GB+ VRAM (RTX 3090/4070/4090)
 - Python 3.10+
 - CUDA 11.8+ or 12.1+
+
+## 🔗 Related Projects
+
+- **[SpriteForge](https://github.com/Limbicnation/SpriteForge)** - The main AI-powered pixel art sprite generator project that uses this trainer
+  - Generate pixel art sprites with FLUX.2-klein-4B
+  - Game engine export capabilities
+  - Commercial-ready with CC0 training data
 
 ## 🚀 Installation
 
