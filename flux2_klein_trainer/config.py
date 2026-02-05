@@ -20,9 +20,8 @@ class LoRAConfig:
     alpha: int = 16
     dropout: float = 0.0
     target_modules: List[str] = field(default_factory=lambda: [
-        "to_q", "to_k", "to_v", "to_out",
-        "proj_in", "proj_out",
-        "ff.net.0.proj", "ff.net.2.proj",
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
     ])
     use_rslora: bool = True  # Rank-stabilized LoRA for better training
 

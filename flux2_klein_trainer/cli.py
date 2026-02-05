@@ -2,6 +2,7 @@
 
 import click
 from pathlib import Path
+from typing import Optional
 from .trainer import KleinLoRATrainer
 from .config import TrainingConfig, ModelConfig, LoRAConfig, DatasetConfig
 
