@@ -102,6 +102,7 @@ class TrainingConfig:
     
     # Training
     output_dir: str = "./output/flux2-klein-lora"
+    resume_from_checkpoint: Optional[str] = None
     num_train_steps: int = 2000
     batch_size: int = 1
     gradient_accumulation_steps: int = 4

@@ -11,7 +11,8 @@ from PIL import Image
 from diffusers import Flux2KleinPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import CLIPTokenizer, T5EncoderModel, CLIPTextModel
-from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
+from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, get_peft_model_state_dict
+from safetensors.torch import load_file
 from accelerate import Accelerator
 from huggingface_hub import create_repo, upload_folder, HfApi
 
@@ -64,6 +65,9 @@ class KleinLoRATrainer:
         
         # Apply LoRA to transformer
         self._apply_lora()
+        
+        if self.config.resume_from_checkpoint:
+            self._resume_from_checkpoint()
         
         # Setup dataset
         self.accelerator.print("📂 Loading dataset...")
@@ -126,6 +130,37 @@ class KleinLoRATrainer:
         self.pipe.transformer = get_peft_model(self.pipe.transformer, lora_config)
         self.pipe.transformer.print_trainable_parameters()
         
+    def _resume_from_checkpoint(self):
+        """Resume training from a checkpoint."""
+        checkpoint_path = Path(self.config.resume_from_checkpoint)
+        if not checkpoint_path.exists():
+            self.accelerator.print(f"⚠️  Checkpoint path does not exist: {checkpoint_path}")
+            return
+            
+        self.accelerator.print(f"🔄 Resuming from checkpoint: {checkpoint_path}")
+        
+        # Load weights into the PeftModel
+        weights_path = checkpoint_path / "pytorch_lora_weights.safetensors"
+        if not weights_path.exists():
+            self.accelerator.print(f"⚠️  Weights file not found: {weights_path}")
+            return
+            
+        state_dict = load_file(weights_path)
+        
+        # Peft expects the state dict with specific prefixes if saved via save_lora_weights
+        # Our save fix ensures correct naming, but the current 8GB file might be different
+        # Let's try to load it into the's Peft wrapper
+        set_peft_model_state_dict(self.pipe.transformer, state_dict)
+        
+        # Infer global_step from path name (e.g., 'step_500')
+        try:
+            name = checkpoint_path.name
+            if name.startswith("step_"):
+                self.global_step = int(name.replace("step_", ""))
+                self.accelerator.print(f"   Detected starting step: {self.global_step}")
+        except Exception:
+            self.accelerator.print("   Could not detect starting step from path name, starting from 0.")
+        
     def train(self):
         """Main training loop."""
         self.setup()
@@ -187,9 +222,37 @@ class KleinLoRATrainer:
             if self.config.push_to_hub:
                 self.push_to_hub()
     
+    @staticmethod
+    def _patchify_latents(latents):
+        """Turn latent image patches into flattened features (2x2 patches)."""
+        batch_size, num_channels_latents, height, width = latents.shape
+        latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4)
+        latents = latents.reshape(batch_size, num_channels_latents * 4, height // 2, width // 2)
+        return latents
+
+    @staticmethod
+    def _pack_latents(latents):
+        """Flatten 2D patches into a 1D sequence."""
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+        return latents
+
+    @staticmethod
+    def _prepare_latent_ids(latents):
+        """Generate 4D IDs (T, H, W, L) for positional embeddings."""
+        batch_size, _, height, width = latents.shape
+        t = torch.arange(1)  # [0] - time dimension
+        h = torch.arange(height)
+        w = torch.arange(width)
+        l = torch.arange(1)  # [0] - layer dimension
+        latent_ids = torch.cartesian_prod(t, h, w, l)
+        latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+        return latent_ids
+
     def _training_step(self, batch) -> torch.Tensor:
-        """Single training step."""
-        images = batch["images"].to(self.device)
+        """Single training step using flow matching (for FLUX models)."""
+        images = batch["images"].to(self.device).to(dtype=self.pipe.vae.dtype)
         captions = batch["captions"]
         
         # Add trigger word if specified
@@ -199,37 +262,47 @@ class KleinLoRATrainer:
         # Encode images to latents
         with torch.no_grad():
             latents = self.pipe.vae.encode(images).latent_dist.sample()
-            latents = latents * self.pipe.vae.config.scaling_factor
+            # FLUX.2-klein uses 32 latent channels. Patchification turns 2x2 patches into 128 features.
+            latents = self._patchify_latents(latents)
         
-        # Sample noise and timesteps
+        # Sample noise and timesteps for flow matching
         noise = torch.randn_like(latents)
-        timesteps = torch.randint(
-            0, self.pipe.scheduler.config.num_train_timesteps,
-            (latents.shape[0],), device=self.device
-        )
-        timesteps = timesteps.long()
         
-        # Add noise to latents
-        noisy_latents = self.pipe.scheduler.add_noise(latents, noise, timesteps)
+        # Map [0, 1] range to scheduler steps
+        u = torch.rand(latents.shape[0], device=self.device)
+        timesteps = u * 1000.0  # FLUX models usually trained with 0-1000 range internally
+        
+        # Flow matching: nominate x_t = (1 - u) * x_0 + u * epsilon
+        # u = 0 (data), u = 1 (noise)
+        sigmas_t = u.view(-1, 1, 1, 1)
+        noisy_latents = (1 - sigmas_t) * latents + sigmas_t * noise
+        
+        # Target for rectified flow is the velocity (v = epsilon - x_0)
+        target = noise - latents
+        
+        # Pack latents for transformer (B, H*W, 128)
+        packed_noisy_latents = self._pack_latents(noisy_latents)
+        packed_target = self._pack_latents(target)
+        img_ids = self._prepare_latent_ids(noisy_latents).to(self.device)
         
         # Get text embeddings
         with torch.no_grad():
-            prompt_embeds, pooled_prompt_embeds, text_ids = self.pipe.encode_prompt(
+            prompt_embeds, text_ids = self.pipe.encode_prompt(
                 captions,
-                prompt_2=captions,
             )
         
-        # Predict noise
+        # Predict velocity
         model_output = self.pipe.transformer(
-            hidden_states=noisy_latents,
+            hidden_states=packed_noisy_latents,
             timestep=timesteps,
             encoder_hidden_states=prompt_embeds,
-            pooled_projections=pooled_prompt_embeds,
+            txt_ids=text_ids,
+            img_ids=img_ids,
             return_dict=False,
         )[0]
         
-        # Compute loss (MSE for flow matching)
-        loss = F.mse_loss(model_output.float(), noise.float(), reduction="mean")
+        # Compute flow matching loss
+        loss = F.mse_loss(model_output.float(), packed_target.float(), reduction="mean")
         
         return loss
     
@@ -275,10 +348,12 @@ class KleinLoRATrainer:
         save_dir = self.output_dir / step_str
         save_dir.mkdir(exist_ok=True)
         
-        # Save LoRA weights
+        # Save LoRA weights (Only save the Peft weights to keep size small)
         self.pipe.save_lora_weights(
-            save_dir=save_dir,
-            transformer_lora_layers=self.accelerator.unwrap_model(self.pipe.transformer).get_state_dict(),
+            save_directory=save_dir,
+            transformer_lora_layers=get_peft_model_state_dict(
+                self.accelerator.unwrap_model(self.pipe.transformer)
+            ),
         )
         
         # Save config

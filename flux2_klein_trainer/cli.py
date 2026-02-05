@@ -3,8 +3,8 @@
 import click
 from pathlib import Path
 from typing import Optional
-from .trainer import KleinLoRATrainer
-from .config import TrainingConfig, ModelConfig, LoRAConfig, DatasetConfig
+from flux2_klein_trainer.trainer import KleinLoRATrainer
+from flux2_klein_trainer.config import TrainingConfig, ModelConfig, LoRAConfig, DatasetConfig
 
 
 @click.group()
@@ -43,6 +43,8 @@ def cli():
               help="Push to HuggingFace Hub after training")
 @click.option("--low-vram", is_flag=True,
               help="Enable CPU offloading for low VRAM GPUs")
+@click.option("--resume-from-checkpoint", default=None, type=click.Path(exists=True),
+              help="Path to a checkpoint folder to resume from")
 @click.option("--caption-ext", default="txt",
               help="Caption file extension")
 def train(
@@ -58,6 +60,7 @@ def train(
     hub_model_id: Optional[str],
     push_to_hub: bool,
     low_vram: bool,
+    resume_from_checkpoint: Optional[str],
     caption_ext: str,
 ):
     """Train a LoRA model on FLUX.2-klein-4B."""
@@ -82,6 +85,7 @@ def train(
             resolution=resolution,
         ),
         output_dir=output_dir,
+        resume_from_checkpoint=resume_from_checkpoint,
         num_train_steps=steps,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -181,3 +185,7 @@ def generate(
 def main():
     """Entry point."""
     cli()
+
+
+if __name__ == "__main__":
+    main()
