@@ -1,0 +1,56 @@
+# FLUX.2-klein-4B LoRA Training Configuration
+# 
+# Usage: flux2-train train-config -c example_config.yaml
+
+model:
+  pretrained_model_name: "black-forest-labs/FLUX.2-klein-4B"
+  dtype: "bfloat16"  # bfloat16 works best for FLUX.2-klein
+  enable_cpu_offload: false  # Set true for 12GB VRAM GPUs
+
+lora:
+  rank: 16
+  alpha: 16
+  dropout: 0.0
+  use_rslora: true  # Rank-stabilized LoRA for better training
+
+dataset:
+  data_dir: "./training_data/processed/images"
+  caption_ext: "txt"
+  resolution: 512  # 512, 768, or 1024
+  center_crop: false
+  random_flip: true
+
+output_dir: "./output/flux2-klein-lora"
+num_train_steps: 2000
+batch_size: 1
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-4
+lr_scheduler: "cosine_with_restarts"
+warmup_steps: 100
+max_grad_norm: 1.0
+
+optimizer: "adamw_8bit"  # 8-bit Adam for memory efficiency
+beta1: 0.9
+beta2: 0.999
+weight_decay: 0.01
+
+# Checkpointing
+save_every: 500
+sample_every: 500
+log_every: 10
+
+# Sample generation
+sample_prompts:
+  - "pixel art sprite, a brave knight in golden armor, game asset, transparent background"
+  - "pixel art sprite, a wizard with glowing staff, game asset, transparent background"
+  - "pixel art sprite, an elf archer, game asset, transparent background"
+sample_steps: 4  # FLUX.2-klein uses 4 steps
+sample_guidance_scale: 1.0  # FLUX.2-klein uses cfg=1.0
+
+# Trigger word
+trigger_word: "pixel art sprite"
+
+# HuggingFace Hub
+push_to_hub: true
+hub_model_id: "Limbicnation/pixel-art-lora"
+hub_private: false
