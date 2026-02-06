@@ -318,19 +318,24 @@ class KleinLoRATrainer:
         sample_dir = self.output_dir / f"samples_step_{self.global_step}"
         sample_dir.mkdir(exist_ok=True)
         
+        # Get dtype for autocast
+        dtype = torch.bfloat16 if self.config.model.dtype == "bfloat16" else torch.float16
+        
         for i, prompt in enumerate(self.config.sample_prompts):
             # Add trigger word
             if self.config.trigger_word:
                 prompt = f"{self.config.trigger_word}, {prompt}"
             
-            image = self.pipe(
-                prompt=prompt,
-                height=self.config.dataset.resolution,
-                width=self.config.dataset.resolution,
-                num_inference_steps=self.config.sample_steps,
-                guidance_scale=self.config.sample_guidance_scale,
-                generator=torch.Generator(device=self.device).manual_seed(42),
-            ).images[0]
+            # Use autocast to ensure correct dtype handling
+            with torch.autocast(device_type=self.device.type, dtype=dtype):
+                image = self.pipe(
+                    prompt=prompt,
+                    height=self.config.dataset.resolution,
+                    width=self.config.dataset.resolution,
+                    num_inference_steps=self.config.sample_steps,
+                    guidance_scale=self.config.sample_guidance_scale,
+                    generator=torch.Generator(device=self.device).manual_seed(42),
+                ).images[0]
             
             image.save(sample_dir / f"sample_{i:02d}.png")
         
