@@ -324,7 +324,7 @@ class KleinLoRATrainer:
                 prompt = f"{self.config.trigger_word}, {prompt}"
             
             image = self.pipe(
-                prompt,
+                prompt=prompt,
                 height=self.config.dataset.resolution,
                 width=self.config.dataset.resolution,
                 num_inference_steps=self.config.sample_steps,
