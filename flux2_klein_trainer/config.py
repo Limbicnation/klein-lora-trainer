@@ -142,9 +142,17 @@ class TrainingConfig:
     def from_yaml(cls, path: str) -> "TrainingConfig":
         """Load config from YAML file."""
         from omegaconf import OmegaConf
-        
+
         cfg = OmegaConf.load(path)
-        return cls(**OmegaConf.to_container(cfg, resolve=True))
+        raw = OmegaConf.to_container(cfg, resolve=True)
+        # Convert nested dicts to dataclass instances
+        if "model" in raw and isinstance(raw["model"], dict):
+            raw["model"] = ModelConfig(**raw["model"])
+        if "lora" in raw and isinstance(raw["lora"], dict):
+            raw["lora"] = LoRAConfig(**raw["lora"])
+        if "dataset" in raw and isinstance(raw["dataset"], dict):
+            raw["dataset"] = DatasetConfig(**raw["dataset"])
+        return cls(**raw)
     
     def to_yaml(self, path: str):
         """Save config to YAML file."""

@@ -10,7 +10,6 @@ from PIL import Image
 
 from diffusers import Flux2KleinPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from transformers import CLIPTokenizer, T5EncoderModel, CLIPTextModel
 from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, get_peft_model_state_dict
 from safetensors.torch import load_file
 from accelerate import Accelerator
@@ -54,14 +53,13 @@ class KleinLoRATrainer:
         self.pipe = Flux2KleinPipeline.from_pretrained(
             self.config.model.pretrained_model_name,
             torch_dtype=dtype,
+            low_cpu_mem_usage=False,  # Prevent meta tensor crash with Accelerator
         )
         
-        # Enable CPU offloading for low VRAM
+        # Move to device (CPU offload conflicts with Accelerator — don't use both)
         if self.config.model.enable_cpu_offload:
-            self.accelerator.print("💾 Enabling CPU offloading for low VRAM")
-            self.pipe.enable_model_cpu_offload()
-        else:
-            self.pipe = self.pipe.to(self.device)
+            self.accelerator.print("⚠️  CPU offloading conflicts with Accelerator — skipping, using device placement instead")
+        self.pipe = self.pipe.to(self.device)
         
         # Apply LoRA to transformer
         self._apply_lora()
@@ -370,22 +368,31 @@ class KleinLoRATrainer:
         """Push to HuggingFace Hub."""
         if not self.accelerator.is_main_process:
             return
-        
+
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            token_path = Path.home() / ".cache" / "huggingface" / "token"
+            if token_path.exists():
+                token = token_path.read_text().strip()
+
+        if not token:
+            self.accelerator.print("⚠️  HF_TOKEN not set and no cached token found, skipping hub push")
+            return
+
         hub_model_id = self.config.hub_model_id or "Limbicnation/pixel-art-lora"
         self.accelerator.print(f"\n🚀 Pushing to HuggingFace Hub: {hub_model_id}")
-        
-        # Create repo if it doesn't exist
-        api = HfApi()
+
+        api = HfApi(token=token)
         try:
-            create_repo(hub_model_id, exist_ok=True, private=self.config.hub_private)
+            create_repo(hub_model_id, exist_ok=True, private=self.config.hub_private, token=token)
         except Exception as e:
             self.accelerator.print(f"   Repo check: {e}")
-        
-        # Upload
+
         api.upload_folder(
             folder_path=self.output_dir / "final",
             repo_id=hub_model_id,
             repo_type="model",
+            token=token,
         )
-        
+
         self.accelerator.print(f"   ✅ Uploaded to https://huggingface.co/{hub_model_id}")
