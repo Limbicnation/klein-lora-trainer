@@ -350,6 +350,5 @@ class KleinLoRATrainer:
             folder_path=self.output_dir / "final",
             repo_id=hub_model_id,
             repo_type="model",
-            token=token,
         )
         self.accelerator.print(f"   Uploaded to https://huggingface.co/{hub_model_id}")
