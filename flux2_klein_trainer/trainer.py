@@ -8,11 +8,13 @@ from typing import Optional, List
 from tqdm import tqdm
 from PIL import Image
 
-from diffusers import Flux2KleinPipeline
+try:
+    from diffusers import Flux2KleinPipeline as KleinPipeline
+except ImportError:
+    from diffusers import Flux2Pipeline as KleinPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import CLIPTokenizer, T5EncoderModel, CLIPTextModel
-from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, get_peft_model_state_dict
-from safetensors.torch import load_file
+from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
 from accelerate import Accelerator
 from huggingface_hub import create_repo, upload_folder, HfApi
 
@@ -50,24 +52,22 @@ class KleinLoRATrainer:
         # Load pipeline with bfloat16 (optimal for FLUX.2-klein)
         dtype = torch.bfloat16 if self.config.model.dtype == "bfloat16" else torch.float16
         
-        self.accelerator.print(f"📥 Loading FLUX.2-klein-4B with {self.config.model.dtype}...")
-        self.pipe = Flux2KleinPipeline.from_pretrained(
+        self.accelerator.print(f"Loading FLUX.2-klein-4B with {self.config.model.dtype}...")
+        self.pipe = KleinPipeline.from_pretrained(
             self.config.model.pretrained_model_name,
             torch_dtype=dtype,
+            low_cpu_mem_usage=False,
         )
-        
-        # Enable CPU offloading for low VRAM
-        if self.config.model.enable_cpu_offload:
-            self.accelerator.print("💾 Enabling CPU offloading for low VRAM")
-            self.pipe.enable_model_cpu_offload()
-        else:
-            self.pipe = self.pipe.to(self.device)
+
+        # Move frozen components to GPU; let accelerator handle transformer
+        self.pipe.vae = self.pipe.vae.to(self.device)
+        if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
+            self.pipe.text_encoder = self.pipe.text_encoder.to(self.device)
+        if hasattr(self.pipe, 'text_encoder_2') and self.pipe.text_encoder_2 is not None:
+            self.pipe.text_encoder_2 = self.pipe.text_encoder_2.to(self.device)
         
         # Apply LoRA to transformer
         self._apply_lora()
-        
-        if self.config.resume_from_checkpoint:
-            self._resume_from_checkpoint()
         
         # Setup dataset
         self.accelerator.print("📂 Loading dataset...")
@@ -129,37 +129,6 @@ class KleinLoRATrainer:
         # Add LoRA to transformer
         self.pipe.transformer = get_peft_model(self.pipe.transformer, lora_config)
         self.pipe.transformer.print_trainable_parameters()
-        
-    def _resume_from_checkpoint(self):
-        """Resume training from a checkpoint."""
-        checkpoint_path = Path(self.config.resume_from_checkpoint)
-        if not checkpoint_path.exists():
-            self.accelerator.print(f"⚠️  Checkpoint path does not exist: {checkpoint_path}")
-            return
-            
-        self.accelerator.print(f"🔄 Resuming from checkpoint: {checkpoint_path}")
-        
-        # Load weights into the PeftModel
-        weights_path = checkpoint_path / "pytorch_lora_weights.safetensors"
-        if not weights_path.exists():
-            self.accelerator.print(f"⚠️  Weights file not found: {weights_path}")
-            return
-            
-        state_dict = load_file(weights_path)
-        
-        # Peft expects the state dict with specific prefixes if saved via save_lora_weights
-        # Our save fix ensures correct naming, but the current 8GB file might be different
-        # Let's try to load it into the's Peft wrapper
-        set_peft_model_state_dict(self.pipe.transformer, state_dict)
-        
-        # Infer global_step from path name (e.g., 'step_500')
-        try:
-            name = checkpoint_path.name
-            if name.startswith("step_"):
-                self.global_step = int(name.replace("step_", ""))
-                self.accelerator.print(f"   Detected starting step: {self.global_step}")
-        except Exception:
-            self.accelerator.print("   Could not detect starting step from path name, starting from 0.")
         
     def train(self):
         """Main training loop."""
@@ -273,7 +242,6 @@ class KleinLoRATrainer:
         timesteps = u * 1000.0  # FLUX models usually trained with 0-1000 range internally
         
         # Flow matching: nominate x_t = (1 - u) * x_0 + u * epsilon
-        # u = 0 (data), u = 1 (noise)
         sigmas_t = u.view(-1, 1, 1, 1)
         noisy_latents = (1 - sigmas_t) * latents + sigmas_t * noise
         
@@ -348,12 +316,10 @@ class KleinLoRATrainer:
         save_dir = self.output_dir / step_str
         save_dir.mkdir(exist_ok=True)
         
-        # Save LoRA weights (Only save the Peft weights to keep size small)
+        # Save LoRA weights
         self.pipe.save_lora_weights(
             save_directory=save_dir,
-            transformer_lora_layers=get_peft_model_state_dict(
-                self.accelerator.unwrap_model(self.pipe.transformer)
-            ),
+            transformer_lora_layers=self.accelerator.unwrap_model(self.pipe.transformer).state_dict(),
         )
         
         # Save config
@@ -365,22 +331,24 @@ class KleinLoRATrainer:
         """Push to HuggingFace Hub."""
         if not self.accelerator.is_main_process:
             return
-        
+
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            self.accelerator.print("HF_TOKEN not set, skipping hub push")
+            return
+
         hub_model_id = self.config.hub_model_id or "Limbicnation/pixel-art-lora"
-        self.accelerator.print(f"\n🚀 Pushing to HuggingFace Hub: {hub_model_id}")
-        
-        # Create repo if it doesn't exist
-        api = HfApi()
+        self.accelerator.print(f"\nPushing to HuggingFace Hub: {hub_model_id}")
+
+        api = HfApi(token=token)
         try:
-            create_repo(hub_model_id, exist_ok=True, private=self.config.hub_private)
+            create_repo(hub_model_id, exist_ok=True, private=self.config.hub_private, token=token)
         except Exception as e:
             self.accelerator.print(f"   Repo check: {e}")
-        
-        # Upload
+
         api.upload_folder(
             folder_path=self.output_dir / "final",
             repo_id=hub_model_id,
             repo_type="model",
         )
-        
-        self.accelerator.print(f"   ✅ Uploaded to https://huggingface.co/{hub_model_id}")
+        self.accelerator.print(f"   Uploaded to https://huggingface.co/{hub_model_id}")
