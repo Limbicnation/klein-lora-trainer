@@ -14,7 +14,8 @@ except ImportError:
     from diffusers import Flux2Pipeline as KleinPipeline
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import CLIPTokenizer, T5EncoderModel, CLIPTextModel
-from peft import LoraConfig, get_peft_model, set_peft_model_state_dict
+from peft import LoraConfig, get_peft_model, set_peft_model_state_dict, get_peft_model_state_dict
+from safetensors.torch import load_file, save_file
 from accelerate import Accelerator
 from huggingface_hub import create_repo, upload_folder, HfApi
 
@@ -52,13 +53,13 @@ class KleinLoRATrainer:
         # Load pipeline with bfloat16 (optimal for FLUX.2-klein)
         dtype = torch.bfloat16 if self.config.model.dtype == "bfloat16" else torch.float16
         
-        self.accelerator.print(f"Loading FLUX.2-klein-4B with {self.config.model.dtype}...")
+        self.accelerator.print(f"📥 Loading FLUX.2-klein-4B with {self.config.model.dtype}...")
         self.pipe = KleinPipeline.from_pretrained(
             self.config.model.pretrained_model_name,
             torch_dtype=dtype,
-            low_cpu_mem_usage=False,
+            low_cpu_mem_usage=False,  # Prevent meta tensor crash with Accelerator
         )
-
+        
         # Move frozen components to GPU; let accelerator handle transformer
         self.pipe.vae = self.pipe.vae.to(self.device)
         if hasattr(self.pipe, 'text_encoder') and self.pipe.text_encoder is not None:
@@ -286,19 +287,24 @@ class KleinLoRATrainer:
         sample_dir = self.output_dir / f"samples_step_{self.global_step}"
         sample_dir.mkdir(exist_ok=True)
         
+        # Get dtype for autocast
+        dtype = torch.bfloat16 if self.config.model.dtype == "bfloat16" else torch.float16
+        
         for i, prompt in enumerate(self.config.sample_prompts):
             # Add trigger word
             if self.config.trigger_word:
                 prompt = f"{self.config.trigger_word}, {prompt}"
             
-            image = self.pipe(
-                prompt,
-                height=self.config.dataset.resolution,
-                width=self.config.dataset.resolution,
-                num_inference_steps=self.config.sample_steps,
-                guidance_scale=self.config.sample_guidance_scale,
-                generator=torch.Generator(device=self.device).manual_seed(42),
-            ).images[0]
+            # Use autocast to ensure correct dtype handling
+            with torch.autocast(device_type=self.device.type, dtype=dtype):
+                image = self.pipe(
+                    prompt=prompt,
+                    height=self.config.dataset.resolution,
+                    width=self.config.dataset.resolution,
+                    num_inference_steps=self.config.sample_steps,
+                    guidance_scale=self.config.sample_guidance_scale,
+                    generator=torch.Generator(device=self.device).manual_seed(42),
+                ).images[0]
             
             image.save(sample_dir / f"sample_{i:02d}.png")
         
@@ -309,18 +315,19 @@ class KleinLoRATrainer:
         """Save LoRA checkpoint."""
         if not self.accelerator.is_main_process:
             return
-        
+
         step_str = "final" if is_final else f"step_{self.global_step}"
         self.accelerator.print(f"\n💾 Saving checkpoint: {step_str}")
-        
+
         save_dir = self.output_dir / step_str
         save_dir.mkdir(exist_ok=True)
-        
-        # Save LoRA weights
-        self.pipe.save_lora_weights(
-            save_directory=save_dir,
-            transformer_lora_layers=self.accelerator.unwrap_model(self.pipe.transformer).state_dict(),
-        )
+
+        # FIXED: Save ONLY LoRA delta weights (~200-400 MB), NOT full model (~8 GB)
+        unwrapped_transformer = self.accelerator.unwrap_model(self.pipe.transformer)
+        lora_state_dict = get_peft_model_state_dict(unwrapped_transformer)
+        save_file(lora_state_dict, save_dir / "pytorch_lora_weights.safetensors")
+
+        self.accelerator.print(f"   ✅ Saved LoRA weights: {len(lora_state_dict)} tensors")
         
         # Save config
         self.config.to_yaml(save_dir / "config.yaml")
@@ -334,11 +341,16 @@ class KleinLoRATrainer:
 
         token = os.environ.get("HF_TOKEN")
         if not token:
-            self.accelerator.print("HF_TOKEN not set, skipping hub push")
+            token_path = Path.home() / ".cache" / "huggingface" / "token"
+            if token_path.exists():
+                token = token_path.read_text().strip()
+
+        if not token:
+            self.accelerator.print("⚠️  HF_TOKEN not set and no cached token found, skipping hub push")
             return
 
         hub_model_id = self.config.hub_model_id or "Limbicnation/pixel-art-lora"
-        self.accelerator.print(f"\nPushing to HuggingFace Hub: {hub_model_id}")
+        self.accelerator.print(f"\n🚀 Pushing to HuggingFace Hub: {hub_model_id}")
 
         api = HfApi(token=token)
         try:
@@ -350,5 +362,7 @@ class KleinLoRATrainer:
             folder_path=self.output_dir / "final",
             repo_id=hub_model_id,
             repo_type="model",
+            token=token,
         )
-        self.accelerator.print(f"   Uploaded to https://huggingface.co/{hub_model_id}")
+
+        self.accelerator.print(f"   ✅ Uploaded to https://huggingface.co/{hub_model_id}")
