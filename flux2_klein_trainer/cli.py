@@ -2,9 +2,9 @@
 
 import click
 from pathlib import Path
-from typing import Optional
 from flux2_klein_trainer.trainer import KleinLoRATrainer
 from flux2_klein_trainer.config import TrainingConfig, ModelConfig, LoRAConfig, DatasetConfig
+from typing import Optional
 
 
 @click.group()
@@ -43,8 +43,6 @@ def cli():
               help="Push to HuggingFace Hub after training")
 @click.option("--low-vram", is_flag=True,
               help="Enable CPU offloading for low VRAM GPUs")
-@click.option("--resume-from-checkpoint", default=None, type=click.Path(exists=True),
-              help="Path to a checkpoint folder to resume from")
 @click.option("--caption-ext", default="txt",
               help="Caption file extension")
 def train(
@@ -60,7 +58,6 @@ def train(
     hub_model_id: Optional[str],
     push_to_hub: bool,
     low_vram: bool,
-    resume_from_checkpoint: Optional[str],
     caption_ext: str,
 ):
     """Train a LoRA model on FLUX.2-klein-4B."""
@@ -85,7 +82,6 @@ def train(
             resolution=resolution,
         ),
         output_dir=output_dir,
-        resume_from_checkpoint=resume_from_checkpoint,
         num_train_steps=steps,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -159,13 +155,17 @@ def generate(
 ):
     """Generate an image using a trained LoRA."""
     import torch
-    from diffusers import Flux2KleinPipeline
-    
-    click.echo("🎨 Generating image...")
-    
-    pipe = Flux2KleinPipeline.from_pretrained(
+    try:
+        from diffusers import Flux2KleinPipeline as KleinPipeline
+    except ImportError:
+        from diffusers import Flux2Pipeline as KleinPipeline
+
+    click.echo("Generating image...")
+
+    pipe = KleinPipeline.from_pretrained(
         "black-forest-labs/FLUX.2-klein-4B",
         torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=False,
     )
     pipe.load_lora_weights(model_path)
     pipe = pipe.to("cuda")
@@ -180,8 +180,6 @@ def generate(
     
     image.save(output)
     click.echo(f"✅ Saved to {output}")
-
-
 def main():
     """Entry point."""
     cli()

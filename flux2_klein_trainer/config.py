@@ -12,69 +12,18 @@ class ModelConfig:
     dtype: str = "bfloat16"  # FLUX.2-klein works best with bfloat16
     enable_cpu_offload: bool = False  # Set True for <16GB VRAM
     
-
-def _get_default_target_modules():
-    """Generate correct target modules for FLUX.2-klein transformer.
     
-    FLUX.2-klein uses a unique architecture with:
-    - 5 double-stream transformer blocks (joint image-text processing)
-    - 20 single-stream transformer blocks (unified processing)
-    - Various embedders and modulation layers
-    """
-    modules = []
-    
-    # Double-stream transformer blocks (5 blocks)
-    for i in range(5):
-        modules.extend([
-            f"transformer_blocks.{i}.attn.to_q",
-            f"transformer_blocks.{i}.attn.to_k",
-            f"transformer_blocks.{i}.attn.to_v",
-            f"transformer_blocks.{i}.attn.to_out.0",
-            f"transformer_blocks.{i}.attn.add_q_proj",
-            f"transformer_blocks.{i}.attn.add_k_proj",
-            f"transformer_blocks.{i}.attn.add_v_proj",
-            f"transformer_blocks.{i}.attn.to_add_out",
-            f"transformer_blocks.{i}.ff.linear_in",
-            f"transformer_blocks.{i}.ff.linear_out",
-            f"transformer_blocks.{i}.ff_context.linear_in",
-            f"transformer_blocks.{i}.ff_context.linear_out",
-        ])
-    
-    # Single-stream transformer blocks (20 blocks)
-    for i in range(20):
-        modules.extend([
-            f"single_transformer_blocks.{i}.attn.to_qkv_mlp_proj",
-            f"single_transformer_blocks.{i}.attn.to_out",
-        ])
-    
-    # Embedders and output layers
-    modules.extend([
-        "time_guidance_embed.timestep_embedder.linear_1",
-        "time_guidance_embed.timestep_embedder.linear_2",
-        "double_stream_modulation_img.linear",
-        "double_stream_modulation_txt.linear",
-        "x_embedder",
-        "context_embedder",
-        "single_stream_modulation.linear",
-        "norm_out.linear",
-        "proj_out",
-    ])
-    
-    return modules
-
-
 @dataclass
 class LoRAConfig:
-    """LoRA configuration for FLUX.2-klein-4B.
-    
-    WARNING: FLUX.2-klein uses DIFFERENT module names than standard LLaMA!
-    The transformer uses transformer_blocks.X and single_transformer_blocks.X
-    instead of model.layers.X
-    """
+    """LoRA configuration."""
     rank: int = 16
     alpha: int = 16
     dropout: float = 0.0
-    target_modules: List[str] = field(default_factory=_get_default_target_modules)
+    target_modules: List[str] = field(default_factory=lambda: [
+        "to_q", "to_k", "to_v", "to_out",
+        "proj_in", "proj_out",
+        "ff.net.0.proj", "ff.net.2.proj",
+    ])
     use_rslora: bool = True  # Rank-stabilized LoRA for better training
 
 
@@ -102,7 +51,6 @@ class TrainingConfig:
     
     # Training
     output_dir: str = "./output/flux2-klein-lora"
-    resume_from_checkpoint: Optional[str] = None
     num_train_steps: int = 2000
     batch_size: int = 1
     gradient_accumulation_steps: int = 4
